@@ -122,7 +122,7 @@ stocks={
     "BAJAJHFL.NS": 88.23,
     "BHARTIARTL.NS": 1961.15,
     "BHEL.NS": 249.45,
-    "BOSCHLTD.NS": 40000,
+    "BOSCHLTD.NS": 38000,
     "BPCL.NS": 367.20,
     "BSE.NS": 2718.29,
     "CANBK.NS": 139.45,
