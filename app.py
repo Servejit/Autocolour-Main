@@ -17,8 +17,8 @@ st.title("📊 Live Prices with P2L")
 # ---------------------------------------------------
 # TELEGRAM SETTINGS
 
-BOT_TOKEN = "8371973661:AAFTOjh53yKmmgv3eXqD5wf8Ki6XXrZPq2c"
-CHAT_ID = "5355913841"
+BOT_TOKEN = "YOUR_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
 # ---------------------------------------------------
 # FLASHING CSS
@@ -38,7 +38,7 @@ table {
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------
-# ⭐ EXCEL UPLOAD FEATURE (NEW ADDITION ONLY)
+# 📂 EXCEL UPLOAD FEATURE (ADDED)
 
 st.markdown("### 📂 Upload Excel for Score Analysis")
 
@@ -47,26 +47,26 @@ excel_file = st.file_uploader(
     type=["xlsx"]
 )
 
-EXCEL_PATH = "uploaded_stock_scores.xlsx"
+EXCEL_PATH = "stock_scores.xlsx"
 
 excel_df = None
 
 if excel_file is not None:
 
-    # Delete old file automatically
     if os.path.exists(EXCEL_PATH):
         os.remove(EXCEL_PATH)
 
-    # Save new file
     with open(EXCEL_PATH, "wb") as f:
         f.write(excel_file.read())
 
-    # Read file
     excel_df = pd.read_excel(EXCEL_PATH)
 
-    # Clean stock names
-    excel_df["Stock"] = excel_df["Stock"].astype(str).str.replace(".NS","").str.upper()
-
+    excel_df["Stock"] = (
+        excel_df["Stock"]
+        .astype(str)
+        .str.replace(".NS","")
+        .str.upper()
+    )
 
 # ---------------------------------------------------
 # STOCKSTAR INPUT
@@ -108,7 +108,7 @@ DEFAULT_SOUND_URL = "https://assets.mixkit.co/active_storage/sfx/2869/2869-previ
 # STOCK LIST
 
 stocks = {
-    # (YOUR COMPLETE STOCK DICTIONARY — NO CHANGE)
+
     "ADANIENT.NS": 2092.68,
     "ADANIGREEN.NS": 957.19,
     "ADANIPORTS.NS": 1487.82,
@@ -184,10 +184,11 @@ stocks = {
 }
 
 # ---------------------------------------------------
-# FETCH DATA (NO CHANGE)
+# FETCH DATA
 
 @st.cache_data(ttl=60)
 def fetch_data():
+
     symbols = list(stocks.keys())
 
     data = yf.download(
@@ -202,7 +203,9 @@ def fetch_data():
     rows = []
 
     for sym in symbols:
+
         try:
+
             ref_low = stocks[sym]
 
             price = data[sym]["Close"].iloc[-1]
@@ -230,29 +233,29 @@ def fetch_data():
 
     return pd.DataFrame(rows)
 
-
 # ---------------------------------------------------
 # LOAD DATA
 
 df = fetch_data()
 
-# ---------------------------------------------------
-# MERGE EXCEL DATA (NEW ADDITION)
+# merge excel
 
 if excel_df is not None:
     df = df.merge(excel_df, on="Stock", how="left")
 
-
 # ---------------------------------------------------
-# HTML TABLE MODIFY COLOR ONLY (NEW ADDITION INSIDE)
+# ORIGINAL TABLE WITH EXCEL COLOR ADDITION
 
 def generate_html_table(dataframe):
 
-    html = """<table style="width:100%; border-collapse: collapse;">"""
+    html = """
+    <table style="width:100%; border-collapse: collapse;">
+    <tr style="background-color:#111;">
+    """
 
-    html += "<tr style='background-color:#111;'>"
     for col in dataframe.columns:
         html += f"<th style='padding:8px; border:1px solid #444;'>{col}</th>"
+
     html += "</tr>"
 
     for _, row in dataframe.iterrows():
@@ -262,26 +265,56 @@ def generate_html_table(dataframe):
         for col in dataframe.columns:
 
             value = row[col]
+
             style = "padding:6px; border:1px solid #444; text-align:center;"
 
-            # ---------------------------------------------------
-            # EXCEL COLOR PRIORITY LOGIC (NEW ADDITION)
+            # ORIGINAL COLORS
+
+            if col == "Stock":
+
+                if row["Stock"] in stockstar_list and row["P2L %"] < -5:
+
+                    style += "color:green; font-weight:bold; animation: flash 1s infinite;"
+
+                elif row["Stock"] in stockstar_list and row["P2L %"] < -3:
+
+                    style += "color:orange; font-weight:bold;"
+
+                elif row["P2L %"] < -2:
+
+                    style += "color:hotpink; font-weight:bold;"
+
+
+            if col in ["P2L %", "% Chg"]:
+
+                if value > 0:
+
+                    style += "color:green; font-weight:bold;"
+
+                elif value < 0:
+
+                    style += "color:red; font-weight:bold;"
+
+
+            # EXCEL PRICE COLOR
 
             if col == "Price" and excel_df is not None:
 
                 if pd.notna(row.get("Main6")) and row["Main6"] >= 3:
+
                     style += "color:orange; font-weight:bold;"
 
                 elif pd.notna(row.get("Main4")) and row["Main4"] >= 2:
+
                     style += "color:hotpink; font-weight:bold;"
 
                 elif pd.notna(row.get("Total")) and row["Total"] >= 3:
+
                     style += "color:yellow; font-weight:bold;"
 
 
-            # ---------------------------------------------------
-
             if isinstance(value, float):
+
                 value = f"{value:.2f}"
 
             html += f"<td style='{style}'>{value}</td>"
@@ -293,12 +326,9 @@ def generate_html_table(dataframe):
     return html
 
 
-# ---------------------------------------------------
-
 st.markdown(generate_html_table(df), unsafe_allow_html=True)
 
 # ---------------------------------------------------
-# AVERAGE
 
 average_p2l = df["P2L %"].mean()
 
