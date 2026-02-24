@@ -113,7 +113,7 @@ DEFAULT_SOUND_URL="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview
 # ---------------------------------------------------
 # STOCK LIST (ORIGINAL)
 
-stocks=
+stocks= {
     "ADANIENT.NS": 2092.68,
     "ADANIGREEN.NS": 957.19,
     "ADANIPORTS.NS": 1487.82,
