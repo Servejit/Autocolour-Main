@@ -1,474 +1,990 @@
-# ---------------------------------------------------
-# INSTALL (Run once)
-# pip install streamlit yfinance pandas requests openpyxl
-# ---------------------------------------------------
-
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import base64
-import requests
-from datetime import datetime
 import os
+import io
+import re
+import json
+import hashlib
+import sqlite3
+from datetime import datetime, date
 
-st.set_page_config(page_title="📊 Live Stock P2L", layout="wide")
-st.title("📊 Live Prices with P2L")
+import pandas as pd
+import numpy as np
+import requests
+import yfinance as yf
+import streamlit as st
 
-# ---------------------------------------------------
-# TELEGRAM SETTINGS
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.utils import get_column_letter
 
-BOT_TOKEN = "8371973661:AAFTOjh53yKmmgv3eXqD5wf8Ki6XXrZPq2c"
-CHAT_ID = "5355913841"
 
-# ---------------------------------------------------
-# FLASHING CSS
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 
-st.markdown("""
-<style>
-@keyframes flash {
-0% { opacity: 1; }
-50% { opacity: 0.2; }
-100% { opacity: 1; }
-}
-table {
-background-color:#0e1117;
-color:white;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------------------------------------------------
-# 📂 EXCEL UPLOAD (ADDED FEATURE ONLY)
-
-st.markdown("### 📂 Upload Excel for Score Analysis")
-
-excel_file = st.file_uploader(
-"Upload Excel File",
-type=["xlsx"]
+st.set_page_config(
+    page_title="6thSense (6S-FO200) Vardaan",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-EXCEL_PATH="stock_scores.xlsx"
 
-excel_df=None
+# ============================================================
+# CONSTANTS / DIRECTORIES
+# ============================================================
 
-if excel_file is not None:
+APP_TITLE = "6thSense (6S-FO200) Vardaan"
 
-    if os.path.exists(EXCEL_PATH):
-        os.remove(EXCEL_PATH)
+DATA_DIR = "data"
+MASTER_DIR = os.path.join(DATA_DIR, "master")
+DB_FILE = os.path.join(DATA_DIR, "vardaan.db")
+MASTER_FILE = os.path.join(MASTER_DIR, "Master.xlsx")
 
-    with open(EXCEL_PATH,"wb") as f:
-        f.write(excel_file.read())
+OUTPUT_FILENAME = "6thsense(6S-FO200)Vardaan.xlsx"
 
-    excel_df=pd.read_excel(EXCEL_PATH)
+DEFAULT_BLUE = "ADD8E6"
+DEFAULT_GREEN = "90EE90"
 
-    excel_df["Stock"]=(
-    excel_df["Stock"]
-    .astype(str)
-    .str.replace(".NS","")
-    .str.upper()
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(MASTER_DIR, exist_ok=True)
+
+
+# ============================================================
+# CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    .main-title {
+        text-align: center;
+        font-size: 32px;
+        font-weight: 700;
+        margin-top: 5px;
+        margin-bottom: 20px;
+    }
+
+    .login-box {
+        max-width: 430px;
+        margin: 35px auto;
+        padding: 25px;
+        border-radius: 14px;
+        border: 1px solid #dddddd;
+        background: #fafafa;
+    }
+
+    .admin-box {
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #dddddd;
+        margin-bottom: 15px;
+    }
+
+    .status-box {
+        padding: 12px;
+        border-radius: 10px;
+        background: #f4f4f4;
+        border: 1px solid #dddddd;
+        margin-bottom: 12px;
+    }
+
+    div.stButton > button {
+        width: 100%;
+        font-weight: 600;
+    }
+
+    .small-note {
+        color: #666666;
+        font-size: 13px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+def get_db():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        """
     )
 
-# ---------------------------------------------------
-# STOCKSTAR INPUT
-
-stockstar_input = st.text_input(
-"⭐ StockStar (Comma Separated)",
-"BOSCHLTD.NS, BSE.NS, HEROMOTOCO.NS, HINDALCO.NS, HINDZINC.NS, M&M.NS, MUTHOOTFIN.NS, PIIND.NS"
-).upper()
-
-stockstar_list=[
-s.strip().replace(".NS","")
-for s in stockstar_input.split(",")
-if s.strip()!=""
-]
-
-# ---------------------------------------------------
-# SOUND SETTINGS (RESTORED)
-
-sound_alert = st.toggle(
-"🔊 Enable Alert Sound for -5% Green Stocks",
-value=False
-)
-
-# ---------------------------------------------------
-# TELEGRAM ALERT TOGGLE (RESTORED)
-
-telegram_alert = st.toggle(
-"📲 Enable Telegram Alert for Green Flashing",
-value=False
-)
-
-# ---------------------------------------------------
-# SOUND UPLOAD (RESTORED)
-
-st.markdown("### 🎵 Alert Sound Settings")
-
-uploaded_sound = st.file_uploader(
-"Upload Your Custom Sound (.mp3 or .wav)",
-type=["mp3","wav"]
-)
-
-DEFAULT_SOUND_URL="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"
-
-# ---------------------------------------------------
-# STOCK LIST (ORIGINAL)
-
-stocks= {
-    "ADANIENT.NS": 2092.68,
-    "ADANIGREEN.NS": 957.19,
-    "ADANIPORTS.NS": 1487.82,
-    "AMBUJACEM.NS": 506.11,
-    "AXISBANK.NS": 1309.52,
-    "BAJAJHFL.NS": 88.23,
-    "BAJAJHLDNG.NS": 10825.60,
-    "BHARTIARTL.NS": 1961.15,
-    "BHEL.NS": 249.45,
-    "BOSCHLTD.NS": 35043.90,
-    "BPCL.NS": 367.20,
-    "BSE.NS": 2718.29,
-    "CANBK.NS": 139.45,
-    "COALINDIA.NS": 404.57,
-    "COFORGE.NS": 1195.90,
-    "DIXON.NS": 10055.80,
-    "DLF.NS": 602.07,
-    "DMART.NS": 3823.09,
-    "ETERNAL.NS": 245.39,
-    "GMRAIRPORT.NS": 93.06,
-    "GODREJCP.NS": 1165.94,
-    "HCLTECH.NS": 1319.19,
-    "HDFCAMC.NS": 2687.89,
-    "HDFCBANK.NS": 890.53,
-    "HEROMOTOCO.NS": 5419.27,
-    "HINDALCO.NS": 878.80,
-    "HINDUNILVR.NS": 2282.38,
-    "HINDZINC.NS": 573.56,
-    "IDFCFIRSTB.NS": 79.61,
-    "INDHOTEL.NS": 661.68,
-    "INDUSINDBK.NS": 907.39,
-    "INDUSTOWER.NS": 451.98,
-    "INFY.NS": 1260.94,
-    "IRCTC.NS": 592.52,
-    "IRFC.NS": 102.28,
-    "ITC.NS": 316.01,
-    "JIOFIN.NS": 258.25,
-    "JSWENERGY.NS": 466.51,
-    "JUBLFOOD.NS": 507.90,
-    "KOTAKBANK.NS": 416.16,
-    "LODHA.NS": 995.51,
-    "LTIM.NS": 4454.34,
-    "M%26M.NS": 3444.69,
-    "MANKIND.NS": 2004.83,
-    "MAZDOCK.NS": 2219.94,
-    "MOTHERSON.NS": 127.84,
-    "MPHASIS.NS": 2205.17,
-    "MUTHOOTFIN.NS": 3348.18,
-    "NAUKRI.NS": 1003.58,
-    "NHPC.NS": 73.34,
-    "OBEROIRLTY.NS": 1486.53,
-    "OFSS.NS": 6367.50,
-    "OIL.NS": 451.02,
-    "PAGEIND.NS": 32302.68,
-    "PERSISTENT.NS": 4573.54,
-    "PFC.NS": 395.26,
-    "PHOENIXLTD.NS": 1658.76,
-    "PIIND.NS": 2999.93,
-    "PNB.NS": 116.96,
-    "POLYCAB.NS": 7498.32,
-    "PRESTIGE.NS": 1464.64,
-    "RECLTD.NS": 338.10,
-    "RELIANCE.NS": 1402.25,
-    "SBICARD.NS": 756.25,
-    "SBIN.NS": 1182.96,
-    "SHREECEM.NS": 25621.25,
-    "SOLARINDS.NS": 12787.74,
-    "SRF.NS": 2546.62,
-    "SUZLON.NS": 42.49,
-    "TATACONSUM.NS": 1111.51,
-    "TATASTEEL.NS": 199.55,
-    "TCS.NS": 2578.54,
-    "TECHM.NS": 1331.96,
-    "TRENT.NS": 3880.50,
-    "ULTRACEMCO.NS": 12515.11,
-    "UPL.NS": 712.82,
-    "VBL.NS": 443.37,
-    "YESBANK.NS": 20.60,
-}
-
-# ---------------------------------------------------
-# FETCH DATA
-
-@st.cache_data(ttl=60)
-
-def fetch_data():
-
-    symbols=list(stocks.keys())
-
-    data=yf.download(
-    tickers=symbols,
-    period="2d",
-    interval="1d",
-    group_by="ticker",
-    progress=False
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
     )
 
-    rows=[]
+    conn.commit()
 
-    for sym in symbols:
+    defaults = {
+        "blue_color": DEFAULT_BLUE,
+        "green_color": DEFAULT_GREEN,
+        "telegram_enabled": "0",
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "alert_operator": "<",
+        "alert_value": "-1.00",
+    }
+
+    for key, value in defaults.items():
+        cur.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
+            (key, value),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+# ============================================================
+# PASSWORD / SETTINGS
+# ============================================================
+
+def hash_password(password):
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def get_setting(key, default=""):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT value FROM settings WHERE key=?",
+        (key,),
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        return default
+
+    return row["value"]
+
+
+def set_setting(key, value):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO settings(key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value
+        """,
+        (key, str(value)),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# ADMIN CREDENTIALS
+# ============================================================
+
+def get_admin_credentials():
+
+    username = None
+    password = None
+
+    try:
+        username = st.secrets.get("ADMIN_USERNAME")
+        password = st.secrets.get("ADMIN_PASSWORD")
+    except Exception:
+        pass
+
+    # Local development fallback.
+    # For Streamlit Cloud, use Secrets instead.
+    if not username:
+        username = os.environ.get(
+            "ADMIN_USERNAME",
+            "VardaanAdmin"
+        )
+
+    if not password:
+        password = os.environ.get(
+            "ADMIN_PASSWORD",
+            "MyPassword@123"
+        )
+
+    return str(username), str(password)
+
+
+# ============================================================
+# USER MANAGEMENT
+# ============================================================
+
+def add_user(username, password):
+    username = username.strip()
+
+    if not username or not password:
+        return False, "Username and password are required."
+
+    admin_username, _ = get_admin_credentials()
+
+    if username.lower() == admin_username.lower():
+        return False, "This username is reserved for Admin."
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT username FROM users WHERE username=?",
+        (username,),
+    )
+
+    if cur.fetchone():
+        conn.close()
+        return False, "User already exists."
+
+    cur.execute(
+        """
+        INSERT INTO users(
+            username,
+            password_hash,
+            enabled,
+            created_at
+        )
+        VALUES (?, ?, 1, ?)
+        """,
+        (
+            username,
+            hash_password(password),
+            datetime.now().isoformat(),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    return True, "User created successfully."
+
+
+def change_user_password(username, new_password):
+    if not username or not new_password:
+        return False, "Username and new password are required."
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE users
+        SET password_hash=?
+        WHERE username=?
+        """,
+        (
+            hash_password(new_password),
+            username,
+        ),
+    )
+
+    changed = cur.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    if not changed:
+        return False, "User not found."
+
+    return True, "Password changed successfully."
+
+
+def delete_user(username):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM users WHERE username=?",
+        (username,),
+    )
+
+    deleted = cur.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    if not deleted:
+        return False, "User not found."
+
+    return True, "User deleted."
+
+
+def set_user_enabled(username, enabled):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE users
+        SET enabled=?
+        WHERE username=?
+        """,
+        (
+            1 if enabled else 0,
+            username,
+        ),
+    )
+
+    changed = cur.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    if not changed:
+        return False, "User not found."
+
+    conn.commit()
+    conn.close()
+
+    return True, "User status updated."
+
+
+def get_users():
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT username, enabled, created_at
+        FROM users
+        ORDER BY username
+        """
+    )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return rows
+
+
+def authenticate(username, password):
+
+    admin_username, admin_password = get_admin_credentials()
+
+    if (
+        username.strip() == admin_username
+        and password == admin_password
+    ):
+        return True, "admin"
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT username, password_hash, enabled
+        FROM users
+        WHERE username=?
+        """,
+        (username.strip(),),
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        return False, None
+
+    if not row["enabled"]:
+        return False, "disabled"
+
+    if row["password_hash"] != hash_password(password):
+        return False, None
+
+    return True, "user"
+
+
+# ============================================================
+# EXCEL HELPERS
+# ============================================================
+
+def normalize_header(value):
+
+    if value is None:
+        return ""
+
+    value = str(value).strip().lower()
+
+    value = re.sub(
+        r"[^a-z0-9]+",
+        "",
+        value
+    )
+
+    return value
+
+
+def find_heading(ws, names):
+
+    normalized = {
+        normalize_header(name)
+        for name in names
+    }
+
+    for col in range(1, ws.max_column + 1):
+
+        value = ws.cell(
+            row=1,
+            column=col
+        ).value
+
+        if normalize_header(value) in normalized:
+            return col
+
+    return None
+
+
+def find_heading_contains(ws, text):
+
+    text_norm = normalize_header(text)
+
+    for col in range(1, ws.max_column + 1):
+
+        value = ws.cell(
+            row=1,
+            column=col
+        ).value
+
+        header_norm = normalize_header(value)
+
+        if text_norm in header_norm:
+            return col
+
+    return None
+
+
+def numeric_value(value):
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float, np.number)):
+
+        if pd.isna(value):
+            return None
+
+        return float(value)
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    text = text.replace(",", "")
+
+    match = re.search(
+        r"[-+]?\d+(?:\.\d+)?",
+        text
+    )
+
+    if not match:
+        return None
+
+    try:
+        return float(match.group(0))
+    except Exception:
+        return None
+
+
+def first_number(value):
+
+    if value is None:
+        return None
+
+    text = str(value)
+
+    match = re.search(
+        r"[-+]?\d+(?:\.\d+)?",
+        text
+    )
+
+    if not match:
+        return None
+
+    try:
+        return float(match.group(0))
+    except Exception:
+        return None
+
+
+def number_inside_parentheses(value):
+
+    if value is None:
+        return None
+
+    text = str(value)
+
+    match = re.search(
+        r"\(\s*([-+]?\d+(?:\.\d+)?)\s*\)",
+        text
+    )
+
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def make_fill(hex_color):
+
+    hex_color = str(hex_color).replace("#", "").upper()
+
+    if not re.fullmatch(r"[0-9A-F]{6}", hex_color):
+        hex_color = DEFAULT_BLUE
+
+    return PatternFill(
+        fill_type="solid",
+        fgColor=hex_color
+    )
+
+
+# ============================================================
+# DATE DETECTION
+# ============================================================
+
+MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def extract_date_from_heading(value):
+
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    # --------------------------------------------------------
+    # dd Mon
+    # Example: 10 Sep O2L
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"\b(\d{1,2})\s+"
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+        r"\b",
+        text,
+        re.IGNORECASE
+    )
+
+    if match:
+
+        day = int(match.group(1))
+        month = MONTHS[
+            match.group(2).lower()[:3]
+        ]
+
+        year = datetime.now().year
 
         try:
-
-            ref=stocks[sym]
-
-            price=data[sym]["Close"].iloc[-1]
-
-            prev=data[sym]["Close"].iloc[-2]
-
-            openp=data[sym]["Open"].iloc[-1]
-
-            high=data[sym]["High"].iloc[-1]
-
-            low=data[sym]["Low"].iloc[-1]
-
-            p2l=((price-ref)/ref)*100
-
-            chg=((price-prev)/prev)*100
-
-            rows.append({
-
-            "Stock":sym.replace(".NS",""),
-            "P2L %":p2l,
-            "Price":price,
-            "% Chg":chg,
-            "Low Price":ref,
-            "Open":openp,
-            "High":high,
-            "Low":low
-
-            })
-
-        except:
-
+            return date(
+                year,
+                month,
+                day
+            )
+        except Exception:
             pass
 
-    return pd.DataFrame(rows)
+    # --------------------------------------------------------
+    # dd/mm
+    # Example: 10/09 O2L
+    # --------------------------------------------------------
 
-# ---------------------------------------------------
-# BUTTONS (RESTORED)
+    match = re.search(
+        r"\b(\d{1,2})[/-](\d{1,2})\b",
+        text
+    )
 
-col1,col2=st.columns(2)
+    if match:
 
-with col1:
+        day = int(match.group(1))
+        month = int(match.group(2))
 
-    if st.button("🔄 Refresh"):
+        year = datetime.now().year
 
-        st.cache_data.clear()
+        try:
+            return date(
+                year,
+                month,
+                day
+            )
+        except Exception:
+            pass
 
-        st.rerun()
+    return None
 
-with col2:
 
-    sort_clicked=st.button("📈 Sort by P2L")
+def find_recent_p2l_column(ws):
 
-# ---------------------------------------------------
-# LOAD DATA
+    candidates = []
 
-df=fetch_data()
+    for col in range(1, ws.max_column + 1):
 
-if excel_df is not None:
+        heading = ws.cell(
+            row=1,
+            column=col
+        ).value
 
-    df=df.merge(excel_df,on="Stock",how="left")
+        if heading is None:
+            continue
 
-# ---------------------------------------------------
-# SORT
+        text = str(heading).upper()
 
-if sort_clicked:
+        if "P2L" not in text and "O2L" not in text:
+            continue
 
-    df=df.sort_values("P2L %",ascending=False)
+        dt = extract_date_from_heading(heading)
 
-# ---------------------------------------------------
-# GREEN TRIGGER (RESTORED)
+        if dt is not None:
+            candidates.append(
+                (
+                    dt,
+                    col,
+                    heading
+                )
+            )
 
-green_trigger=False
-trigger_stock=""
-trigger_price=0
-trigger_p2l=0
+    if not candidates:
+        return None
 
-for _,row in df.iterrows():
+    candidates.sort(
+        key=lambda x: x[0],
+        reverse=True
+    )
 
-    if row["Stock"] in stockstar_list and row["P2L %"]<-5:
+    return candidates[0][1]
 
-        green_trigger=True
-        trigger_stock=row["Stock"]
-        trigger_price=row["Price"]
-        trigger_p2l=row["P2L %"]
 
-        break
+# ============================================================
+# MASTER EXCEL PROCESSING
+# ============================================================
 
-# ---------------------------------------------------
-# ALERT STATE
+def process_master_excel(master_bytes):
 
-if "alert_played" not in st.session_state:
+    source = io.BytesIO(master_bytes)
 
-    st.session_state.alert_played=False
+    source_wb = load_workbook(
+        source,
+        data_only=True
+    )
 
-if not green_trigger:
+    if "summary" not in source_wb.sheetnames:
+        raise ValueError(
+            "The uploaded Master Excel does not contain a 'summary' sheet."
+        )
 
-    st.session_state.alert_played=False
+    source_ws = source_wb["summary"]
 
-# ---------------------------------------------------
-# TELEGRAM ALERT (RESTORED)
+    output_wb = Workbook()
 
-if telegram_alert and green_trigger and not st.session_state.alert_played:
+    output_ws = output_wb.active
+    output_ws.title = "summary"
 
-    current_time=datetime.now().strftime("%I:%M:%S %p")
+    # --------------------------------------------------------
+    # COPY VALUES ONLY
+    # --------------------------------------------------------
 
-    message=f"""
+    for row in source_ws.iter_rows():
 
-🟢 GREEN FLASH ALERT
+        for cell in row:
 
-Stock: {trigger_stock}
+            output_ws.cell(
+                row=cell.row,
+                column=cell.column,
+                value=cell.value
+            )
 
-Price: ₹{trigger_price:.2f}
+    # --------------------------------------------------------
+    # BASIC EXCEL FORMAT
+    # --------------------------------------------------------
 
-P2L: {trigger_p2l:.2f}%
+    output_ws.freeze_panes = "A2"
 
-Time: {current_time}
+    if output_ws.max_row >= 1 and output_ws.max_column >= 1:
 
-"""
+        output_ws.auto_filter.ref = (
+            f"A1:{get_column_letter(output_ws.max_column)}"
+            f"{output_ws.max_row}"
+        )
 
-    url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    for cell in output_ws[1]:
 
-    requests.post(url,data={
+        cell.font = Font(
+            bold=True
+        )
 
-    "chat_id":CHAT_ID,
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center"
+        )
+
+    # --------------------------------------------------------
+    # COLUMN WIDTH
+    # --------------------------------------------------------
+
+    for col in range(
+        1,
+        output_ws.max_column + 1
+    ):
+
+        max_length = 0
+
+        for row in range(
+            1,
+            min(output_ws.max_row, 1000) + 1
+        ):
+
+            value = output_ws.cell(
+                row=row,
+                column=col
+            ).value
+
+            if value is None:
+                continue
 
-    "text":message
-
-    })
-
-# ---------------------------------------------------
-# TABLE
-
-def generate_html_table(dataframe):
-
-    html="<table style='width:100%;border-collapse:collapse;'>"
-
-    html+="<tr style='background-color:#111;'>"
-
-    for col in dataframe.columns:
-
-        html+=f"<th style='padding:8px;border:1px solid #444'>{col}</th>"
-
-    html+="</tr>"
-
-    for _,row in dataframe.iterrows():
-
-        html+="<tr>"
-
-        for col in dataframe.columns:
-
-            value=row[col]
-
-            style="padding:6px;border:1px solid #444;text-align:center;"
-
-            # ORIGINAL STOCK COLOR
-
-            if col=="Stock":
-
-                if row["Stock"] in stockstar_list and row["P2L %"]<-5:
-
-                    style+="color:green;font-weight:bold;animation: flash 1s infinite;"
-
-                elif row["Stock"] in stockstar_list and row["P2L %"]<-3:
-
-                    style+="color:orange;font-weight:bold;"
-
-                elif row["P2L %"]<-2:
-
-                    style+="color:hotpink;font-weight:bold;"
-
-            # ORIGINAL CHANGE COLOR
-
-            if col in ["P2L %","% Chg"]:
-
-                if value>0:
-
-                    style+="color:green;font-weight:bold;"
-
-                elif value<0:
-
-                    style+="color:red;font-weight:bold;"
-
-            # EXCEL PRICE COLOR (ADDED ONLY)
-
-            if col=="Price" and excel_df is not None:
-
-                if pd.notna(row.get("Main6")) and row["Main6"]>=3:
-
-                    style+="color:orange;font-weight:bold;"
-
-                elif pd.notna(row.get("Main4")) and row["Main4"]>=2:
-
-                    style+="color:hotpink;font-weight:bold;"
-
-                elif pd.notna(row.get("Total")) and row["Total"]>=3:
-
-                    style+="color:yellow;font-weight:bold;"
-
-            if isinstance(value,float):
-
-                value=f"{value:.2f}"
-
-            html+=f"<td style='{style}'>{value}</td>"
-
-        html+="</tr>"
-
-    html+="</table>"
-
-    return html
-
-st.markdown(generate_html_table(df),unsafe_allow_html=True)
-
-# ---------------------------------------------------
-# SOUND ALERT (RESTORED)
-
-if sound_alert and green_trigger and not st.session_state.alert_played:
-
-    st.session_state.alert_played=True
-
-    if uploaded_sound is not None:
-
-        audio_bytes=uploaded_sound.read()
-
-        b64=base64.b64encode(audio_bytes).decode()
-
-        file_type=uploaded_sound.type
-
-        st.markdown(f"""
-
-<audio autoplay>
-
-<source src="data:{file_type};base64,{b64}">
-
-</audio>
-
-""",unsafe_allow_html=True)
-
-    else:
-
-        st.markdown(f"""
-
-<audio autoplay>
-
-<source src="{DEFAULT_SOUND_URL}">
-
-</audio>
-
-""",unsafe_allow_html=True)
-
-# ---------------------------------------------------
-# AVERAGE
-
-avg=df["P2L %"].mean()
-
-st.markdown(f"### 📊 Average P2L of All Stocks is **{avg:.2f}%**")
+            length = len(str(value))
+
+            if length > max_length:
+                max_length = length
+
+        width = min(
+            max(max_length + 2, 10),
+            35
+        )
+
+        output_ws.column_dimensions[
+            get_column_letter(col)
+        ].width = width
+
+    # --------------------------------------------------------
+    # COLORS
+    # --------------------------------------------------------
+
+    blue_color = get_setting(
+        "blue_color",
+        DEFAULT_BLUE
+    )
+
+    green_color = get_setting(
+        "green_color",
+        DEFAULT_GREEN
+    )
+
+    blue_fill = make_fill(blue_color)
+    green_fill = make_fill(green_color)
+
+    # --------------------------------------------------------
+    # FIND IMPORTANT COLUMNS
+    # --------------------------------------------------------
+
+    sum_i_col = find_heading(
+        output_ws,
+        ["Sum I"]
+    )
+
+    col_16_gt = find_heading(
+        output_ws,
+        ["16> C-B / Avg.4"]
+    )
+
+    col_16_lt = find_heading(
+        output_ws,
+        ["16< D-B / Avg.4"]
+    )
+
+    sum_o2h_col = find_heading_contains(
+        output_ws,
+        "Sum O2H.10"
+    )
+
+    sum_o2l_col = find_heading_contains(
+        output_ws,
+        "Sum O2L.10"
+    )
+
+    recent_p2l_col = find_recent_p2l_column(
+        output_ws
+    )
+
+    # --------------------------------------------------------
+    # SYMBOL COLUMN
+    # --------------------------------------------------------
+
+    symbol_col = find_heading(
+        output_ws,
+        [
+            "Symbol",
+            "Stock",
+            "Scrip",
+            "Ticker",
+            "Name"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # CONDITION COUNTER
+    # --------------------------------------------------------
+
+    condition_counts = {}
+
+    for row in range(
+        2,
+        output_ws.max_row + 1
+    ):
+
+        count = 0
+
+        # ----------------------------------------------------
+        # 1. Sum I < -4.00
+        # ----------------------------------------------------
+
+        if sum_i_col:
+
+            value = numeric_value(
+                output_ws.cell(
+                    row=row,
+                    column=sum_i_col
+                ).value
+            )
+
+            if value is not None and value < -4.00:
+
+                output_ws.cell(
+                    row=row,
+                    column=sum_i_col
+                ).fill = blue_fill
+
+                output_ws.cell(
+                    row=row,
+                    column=1
+                ).fill = blue_fill
+
+                count += 1
+
+        # ----------------------------------------------------
+        # 2. 16> C-B / Avg.4
+        #
+        # Example:
+        # 16>0.25, Avg.4(0.44)
+        #
+        # Condition:
+        # parenthesized value < 0.50
+        # ----------------------------------------------------
+
+        if col_16_gt:
+
+            cell_value = output_ws.cell(
+                row=row,
+                column=col_16_gt
+            ).value
+
+            avg_value = number_inside_parentheses(
+                cell_value
+            )
+
+            if (
+                avg_value is not None
+                and avg_value < 0.50
+            ):
+
+                output_ws.cell(
+                    row=row,
+                    column=col_16_gt
+                ).fill = blue_fill
+
+                output_ws.cell(
+                    row=row,
+                    column=1
+                ).fill = blue_fill
+
+                count += 1
+
+        # ----------------------------------------------------
+        # 3. 16< D-B / Avg.4
+        #
+        # Example:
+        # 16<-1.09, Avg.4(-1.23)
+        #
+        # Condition:
+        # Avg.4 < first value
+        # AND
+        # Avg.4 < -1.00
+        # ----------------------------------------------------
+
+        if col_16_lt:
+
+            cell_value = output_ws.cell(
+                row=row,
+                column=col_16_lt
+            ).value
+
+            first_val = first_number(
+                cell_value
+            )
+
+            avg_val = number_inside_parentheses(
+                cell_value
+            )
+
+            if (
+                first_val is not None
+                and avg_val is not None
+                and avg_val < first_val
+                and avg_val < -1.00
+            ):
+
+                output_ws.cell(
+                    row=row,
+                    column=col_16_lt
+                ).fill = blue_fill
+
+                output_ws.cell(
+                    row=row,
+                    column=1
+     
