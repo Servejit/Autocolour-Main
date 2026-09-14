@@ -1,6 +1,0 @@
-streamlit
-openpyxl
-pandas
-numpy
-yfinance
-requests
